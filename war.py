@@ -48,15 +48,29 @@ def readexactly(sock, numbytes):
     before numbytes have been received, be sure to account for that here or in
     the caller.
     """
-    # TODO
-    pass
+    chunks = [] 
+    bytes_recv = 0 
+
+    while bytes_recv < numbytes: 
+        chunk = sock.recv(min(numbytes - bytes_recv, 1024)) 
+        if not chunk: 
+            logging.error("EOF found before numbyptes have been received :(")
+        chunks.append(chunk)
+        bytes_recv += len(chunk)
+
+    return b''.join(chunks) 
 
 
 def kill_game(game):
     """
     TODO: If either client sends a bad message, immediately nuke the game.
     """
-    pass
+    logging.debug("Killing the game! :(")
+    for player in (game.p1, game.p2):
+        try:
+            player.close() 
+        except Exception as e:
+            logging.error(f"Error closing client connection: {e}")
 
 
 def compare_cards(card1, card2):
@@ -64,7 +78,19 @@ def compare_cards(card1, card2):
     TODO: Given an integer card representation, return -1 for card1 < card2,
     0 for card1 = card2, and 1 for card1 > card2
     """
-    pass
+    # val_g_2 = [0, 13, 26, 39]
+    # val_g_3 = [1, 14, 27, 40]
+    rank1 = card1 % 13
+    rank2 = card2 % 13
+    if rank1 < rank2: 
+        logging.debug("Card 2 was better")
+        return -1
+    elif rank1 > rank2:
+        logging.debug("Card 1 was better")
+        return 1
+    else:
+        logging.debug("Both cards are the same")
+        return 0
     
 
 def deal_cards():
@@ -72,7 +98,16 @@ def deal_cards():
     TODO: Randomize a deck of cards (list of ints 0..51), and return two
     26 card "hands."
     """
-    pass
+    list_of_cards = []
+    for i in range(0, 52):
+        list_of_cards.append(i)
+    random.shuffle(list_of_cards)
+    p1_cards, p2_cards = [], []
+    p1_cards = list_of_cards[:26]
+    p2_cards = list_of_cards[26:]
+    logging.debug("Cards have been dealt! :)")
+    return p1_cards, p2_cards
+
     
 
 def serve_game(host, port):
@@ -81,7 +116,90 @@ def serve_game(host, port):
     perform the war protocol to serve a game of war between each client.
     This function should run forever, continually serving clients.
     """
-    pass
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind((host, port))
+        server_sock.listen()
+        print(f"Server listening on {host}:{port}")
+
+        waiting_clients = []
+
+        while True:
+            client_sock, addr = server_sock.accept()
+            print(f"New connection from {addr}")
+            waiting_clients.append(client_sock)
+
+            if len(waiting_clients) >= 2:
+                logging.debug("Starting the game! :)")
+                p1 = waiting_clients.pop(0)
+                p2 = waiting_clients.pop(0)
+                game = Game(p1, p2)
+
+                # Inline game logic
+                def run_single_game(game):
+                    try:
+                        for player in (game.p1, game.p2):
+                            msg = readexactly(player, 2)
+                            if len(msg) != 2:
+                                return kill_game(game)
+                            command, payload = msg
+                            if command != Command.WANTGAME.value or payload != 0:
+                                return kill_game(game)
+                            
+                        p1_hand, p2_hand = deal_cards()
+
+                        try:
+                            game.p1.sendall(bytes([Command.GAMESTART.value]) + bytes(p1_hand))
+                            game.p2.sendall(bytes([Command.GAMESTART.value]) + bytes(p2_hand))
+                        except Exception:
+                            return kill_game(game)
+                        
+                        used_card_p1 = set()
+                        used_card_p2 = set()
+
+                        for i in range(26):
+                            try:
+                                message1 = readexactly(game.p1, 2)
+                                message2 = readexactly(game.p2, 2)
+                                if len(message1) != 2 or len(message2) != 2:
+                                    return kill_game(game)
+                                command1, card1 = message1
+                                command2, card2 = message2
+                                if card1 not in p1_hand or card1 in used_card_p1:
+                                    return kill_game(game)
+                                if card2 not in p2_hand or card2 in used_card_p2:
+                                    return kill_game(game)
+                                used_card_p1.add(card1)
+                                used_card_p2.add(card2)
+                                logging.debug("Comparing cards...")
+                                result = compare_cards(card1, card2)
+                                if result == 1: 
+                                    game.p1.sendall(bytes([Command.PLAYRESULT.value, Result.WIN.value]))
+                                    game.p2.sendall(bytes([Command.PLAYRESULT.value, Result.LOSE.value]))
+                                elif result == -1: 
+                                    game.p1.sendall(bytes([Command.PLAYRESULT.value, Result.LOSE.value]))
+                                    game.p2.sendall(bytes([Command.PLAYRESULT.value, Result.WIN.value]))
+                                else:
+                                    game.p1.sendall(bytes([Command.PLAYRESULT.value, Result.DRAW.value]))
+                                    game.p2.sendall(bytes([Command.PLAYRESULT.value, Result.DRAW.value]))
+                            except Exception:
+                                return kill_game(game)
+                    except Exception as e:
+                        logging.error(f"Game error: {e}")
+                        kill_game(game)
+                    finally:
+                        try: 
+                            game.p1.close()
+                        except Exception as e:
+                            logging.debug(f"Error closing p1 sock: {e}")
+                        try:
+                            game.p2.close()
+                        except Exception as e:
+                            logging.debug(f"Error closing p1 sock: {e}")
+
+                    logging.debug("finished game!")
+                # Start the game in a new thread
+                threading.Thread(target=run_single_game, args=(game,), daemon=True).start()
     
 
 async def limit_client(host, port, loop, sem):
