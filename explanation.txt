@@ -1,0 +1,3 @@
+Multiple games are handled through using the threading module. Specifically this is handled in the serve_game() function. 
+Once there is a pair of clients ready to play a game of war, a new thread is created, and the game is then handled independently using threading and the run_single_game function.
+Previous games do not need to finish in order for new games to start and the 'waiting'_clients' queue means that clients can be paired in a fair order, that of the order they arrive in. 
